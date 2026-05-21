@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AnimWallpaper</string>
+    <string name="wallpaper_name">Fond d\'écran animé</string>
+    <string name="wallpaper_description">Joue une vidéo puis freeze sur la dernière frame</string>
+</resources>

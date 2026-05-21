@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_dark"
+    android:fillViewport="true">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:gravity="center_horizontal">
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🎬"
+            android:textSize="56sp"
+            android:layout_marginTop="32dp"
+            android:layout_marginBottom="12dp" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="AnimWallpaper"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="@color/white" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Fond d'écran animé avec intro vidéo"
+            android:textSize="14sp"
+            android:textColor="@color/text_secondary"
+            android:layout_marginTop="6dp"
+            android:layout_marginBottom="32dp" />
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Aucune vidéo sélectionnée."
+            android:textSize="14sp"
+            android:textColor="@color/white"
+            android:background="@color/card_bg"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp" />
+        <TextView
+            android:id="@+id/tv_video_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="13sp"
+            android:textColor="@color/text_secondary"
+            android:background="@color/card_bg"
+            android:padding="14dp"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone" />
+        <Button
+            android:id="@+id/btn_pick_video"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Choisir une vidéo MP4"
+            android:textColor="@color/white"
+            android:backgroundTint="@color/accent"
+            android:layout_marginBottom="12dp" />
+        <Button
+            android:id="@+id/btn_set_wallpaper"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:text="Définir comme fond d'écran"
+            android:textStyle="bold"
+            android:textColor="@color/bg_dark"
+            android:backgroundTint="@color/white"
+            android:enabled="false"
+            android:layout_marginBottom="24dp" />
+    </LinearLayout>
+</ScrollView>
