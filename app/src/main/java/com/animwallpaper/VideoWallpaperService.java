@@ -21,11 +21,13 @@ import java.io.IOException;
 public class VideoWallpaperService extends WallpaperService {
     public static final String PREFS_NAME = "AnimWallpaperPrefs";
     public static final String KEY_VIDEO_URI = "video_uri";
+    private static final int FREEZE_TIME_MS = 1064;
     @Override
     public Engine onCreateEngine() { return new VideoEngine(); }
     class VideoEngine extends Engine {
         private MediaPlayer mediaPlayer;
-        private Bitmap lastFrame = null;
+        private MediaPlayer bgMediaPlayer;
+        private Bitmap freezeFrame = null;
         private Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private Paint bgPaint = new Paint();
         private boolean isPlaying = false;
@@ -34,6 +36,7 @@ public class VideoWallpaperService extends WallpaperService {
         private Handler bgHandler;
         private Handler mainHandler = new Handler(Looper.getMainLooper());
         private BroadcastReceiver screenReceiver;
+        private Runnable freezeRunnable;
         @Override
         public void onCreate(SurfaceHolder surfaceHolder) {
             super.onCreate(surfaceHolder);
@@ -45,8 +48,7 @@ public class VideoWallpaperService extends WallpaperService {
                 @Override
                 public void onReceive(Context context, Intent intent) {
                     if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
-                        pauseVideo();
-                        resetVideo();
+                        onScreenOff();
                     }
                 }
             };
@@ -57,25 +59,50 @@ public class VideoWallpaperService extends WallpaperService {
         @Override
         public void onSurfaceCreated(SurfaceHolder holder) {
             super.onSurfaceCreated(holder);
-            loadLastFrame();
+            loadFreezeFrame();
         }
         @Override
         public void onVisibilityChanged(boolean visible) {
             super.onVisibilityChanged(visible);
             if (visible) {
-                if (!isPlaying && !videoFinished) {
-                    startVideoFromUri();
-                } else if (videoFinished && lastFrame != null) {
-                    drawLastFrame();
+                    startVideo();
+                } else if (videoFinished) {
+                    drawFreezeFrame();
                 }
             } else {
-                if (!videoFinished) {
-                    pauseVideo();
-                    resetVideo();
+                cancelFreezeRunnable();
+                if (isPlaying) {
+                    pauseMainVideo();
                 }
             }
         }
-        private void loadLastFrame() {
+        private void onScreenOff() {
+            cancelFreezeRunnable();
+            releaseMainPlayer();
+            videoFinished = false;
+            isPlaying = false;
+            playBackgroundToEnd();
+        }
+        private void playBackgroundToEnd() {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            String uriString = prefs.getString(KEY_VIDEO_URI, null);
+            if (uriString == null) return;
+            releaseBgPlayer();
+            bgMediaPlayer = new MediaPlayer();
+            try {
+                bgMediaPlayer.setDataSource(VideoWallpaperService.this, Uri.parse(uriString));
+                bgMediaPlayer.setVolume(0f, 0f);
+                bgMediaPlayer.setLooping(false);
+                bgMediaPlayer.setOnPreparedListener(mp -> {
+                    mp.seekTo(FREEZE_TIME_MS);
+                    mp.start();
+                });
+                bgMediaPlayer.setOnCompletionListener(mp -> releaseBgPlayer());
+                bgMediaPlayer.setOnErrorListener((mp, w, e) -> { releaseBgPlayer(); return true; });
+                bgMediaPlayer.prepareAsync();
+            } catch (IOException e) { releaseBgPlayer(); }
+        }
+        private void loadFreezeFrame() {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             String uriString = prefs.getString(KEY_VIDEO_URI, null);
             if (uriString == null) { drawBlackScreen(); return; }
@@ -84,21 +111,18 @@ public class VideoWallpaperService extends WallpaperService {
                 try {
                     MediaMetadataRetriever retriever = new MediaMetadataRetriever();
                     retriever.setDataSource(VideoWallpaperService.this, videoUri);
-                    String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-                    long duration = Long.parseLong(durationStr);
-                    long frameTime = Math.max(0, (duration - 50)) * 1000;
-                    Bitmap frame = retriever.getFrameAtTime(frameTime, MediaMetadataRetriever.OPTION_CLOSEST);
+                    Bitmap frame = retriever.getFrameAtTime(FREEZE_TIME_MS * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
                     retriever.release();
-                    if (frame != null) lastFrame = frame;
+                    if (frame != null) freezeFrame = frame;
                 } catch (Exception ignored) {}
-                mainHandler.post(() -> drawLastFrame());
+                mainHandler.post(() -> drawFreezeFrame());
             });
         }
-        private void startVideoFromUri() {
+        private void startVideo() {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             String uriString = prefs.getString(KEY_VIDEO_URI, null);
             if (uriString == null) return;
-            releaseMediaPlayer();
+            releaseMainPlayer();
             mediaPlayer = new MediaPlayer();
             videoFinished = false;
             try {
@@ -109,29 +133,40 @@ public class VideoWallpaperService extends WallpaperService {
                 mediaPlayer.setOnPreparedListener(mp -> {
                     isPlaying = true;
                     mp.start();
+                    scheduleFreezeAt(FREEZE_TIME_MS);
                 });
                 mediaPlayer.setOnCompletionListener(mp -> {
                     isPlaying = false;
                     videoFinished = true;
-                    mp.stop();
-                    mainHandler.post(() -> drawLastFrame());
+                    mainHandler.post(() -> drawFreezeFrame());
                 });
-                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                    isPlaying = false;
-                    videoFinished = true;
-                    drawBlackScreen();
-                    return true;
+                mediaPlayer.setOnErrorListener((mp, w, e) -> {
+                    isPlaying = false; videoFinished = true;
+                    drawBlackScreen(); return true;
                 });
                 mediaPlayer.prepareAsync();
             } catch (IOException e) { drawBlackScreen(); }
         }
-        private void resetVideo() {
-            releaseMediaPlayer();
-            videoFinished = false;
-            isPlaying = false;
+        private void scheduleFreezeAt(int ms) {
+            cancelFreezeRunnable();
+            freezeRunnable = () -> {
+                if (isPlaying && mediaPlayer != null) {
+                    try { mediaPlayer.pause(); } catch (Exception ignored) {}
+                    isPlaying = false;
+                    videoFinished = true;
+                    drawFreezeFrame();
+                }
+            };
+            mainHandler.postDelayed(freezeRunnable, ms);
         }
-        private void drawLastFrame() {
-            if (lastFrame == null) { drawBlackScreen(); return; }
+        private void cancelFreezeRunnable() {
+            if (freezeRunnable != null) {
+                mainHandler.removeCallbacks(freezeRunnable);
+                freezeRunnable = null;
+            }
+        }
+        private void drawFreezeFrame() {
+            if (freezeFrame == null) { drawBlackScreen(); return; }
             SurfaceHolder holder = getSurfaceHolder();
             Canvas canvas = null;
             try {
@@ -139,15 +174,15 @@ public class VideoWallpaperService extends WallpaperService {
                 if (canvas != null) {
                     int cW = canvas.getWidth(), cH = canvas.getHeight();
                     canvas.drawRect(0, 0, cW, cH, bgPaint);
-                    float scaleX = (float)cW / lastFrame.getWidth();
-                    float scaleY = (float)cH / lastFrame.getHeight();
+                    float scaleX = (float)cW / freezeFrame.getWidth();
+                    float scaleY = (float)cH / freezeFrame.getHeight();
                     float scale = Math.max(scaleX, scaleY);
-                    float sW = lastFrame.getWidth() * scale;
-                    float sH = lastFrame.getHeight() * scale;
+                    float sW = freezeFrame.getWidth() * scale;
+                    float sH = freezeFrame.getHeight() * scale;
                     Matrix matrix = new Matrix();
                     matrix.setScale(scale, scale);
                     matrix.postTranslate((cW - sW) / 2f, (cH - sH) / 2f);
-                    canvas.drawBitmap(lastFrame, matrix, paint);
+                    canvas.drawBitmap(freezeFrame, matrix, paint);
                 }
             } finally {
                 if (canvas != null) try { holder.unlockCanvasAndPost(canvas); } catch (Exception ignored) {}
@@ -163,11 +198,12 @@ public class VideoWallpaperService extends WallpaperService {
                 if (canvas != null) try { holder.unlockCanvasAndPost(canvas); } catch (Exception ignored) {}
             }
         }
-        private void pauseVideo() {
+        private void pauseMainVideo() {
             if (mediaPlayer != null && isPlaying) try { mediaPlayer.pause(); } catch (Exception ignored) {}
             isPlaying = false;
         }
-        private void releaseMediaPlayer() {
+        private void releaseMainPlayer() {
+            cancelFreezeRunnable();
             if (mediaPlayer != null) {
                 try { mediaPlayer.stop(); } catch (Exception ignored) {}
                 try { mediaPlayer.release(); } catch (Exception ignored) {}
@@ -175,15 +211,26 @@ public class VideoWallpaperService extends WallpaperService {
             }
             isPlaying = false;
         }
+        private void releaseBgPlayer() {
+            if (bgMediaPlayer != null) {
+                try { bgMediaPlayer.stop(); } catch (Exception ignored) {}
+                try { bgMediaPlayer.release(); } catch (Exception ignored) {}
+                bgMediaPlayer = null;
+            }
+        }
         @Override
-        public void onSurfaceDestroyed(SurfaceHolder holder) { super.onSurfaceDestroyed(holder); releaseMediaPlayer(); }
+        public void onSurfaceDestroyed(SurfaceHolder holder) {
+            super.onSurfaceDestroyed(holder);
+            releaseMainPlayer();
+            releaseBgPlayer();
+        }
         @Override
         public void onDestroy() {
             super.onDestroy();
-            releaseMediaPlayer();
+            releaseMainPlayer();
+            releaseBgPlayer();
             if (screenReceiver != null) try { unregisterReceiver(screenReceiver); } catch (Exception ignored) {}
             if (handlerThread != null) handlerThread.quitSafely();
-            if (lastFrame != null && !lastFrame.isRecycled()) { lastFrame.recycle(); lastFrame = null; }
         }
     }
 }
