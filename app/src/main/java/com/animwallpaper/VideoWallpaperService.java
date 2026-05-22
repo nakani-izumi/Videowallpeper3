@@ -16,7 +16,6 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.service.wallpaper.WallpaperService;
-import android.util.Log;
 import android.view.SurfaceHolder;
 import java.io.IOException;
 public class VideoWallpaperService extends WallpaperService {
@@ -46,49 +45,61 @@ public class VideoWallpaperService extends WallpaperService {
                 @Override
                 public void onReceive(Context context, Intent intent) {
                     String action = intent.getAction();
-                    if (Intent.ACTION_SCREEN_ON.equals(action)) restartVideo();
-                    else if (Intent.ACTION_SCREEN_OFF.equals(action)) pauseVideo();
+                    if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                        pauseVideo();
+                        resetVideo();
+                    }
                 }
             };
             IntentFilter filter = new IntentFilter();
-            filter.addAction(Intent.ACTION_SCREEN_ON);
             filter.addAction(Intent.ACTION_SCREEN_OFF);
             registerReceiver(screenReceiver, filter);
         }
         @Override
         public void onSurfaceCreated(SurfaceHolder holder) {
             super.onSurfaceCreated(holder);
-            initVideoPlayer();
+            loadLastFrame();
         }
         @Override
         public void onVisibilityChanged(boolean visible) {
             super.onVisibilityChanged(visible);
             if (visible) {
-                if (videoFinished && lastFrame != null) drawLastFrame();
-                else if (!isPlaying) restartVideo();
-            } else pauseVideo();
+                if (!isPlaying && !videoFinished) {
+                    startVideoFromUri();
+                } else if (videoFinished && lastFrame != null) {
+                    drawLastFrame();
+                }
+            } else {
+                if (!videoFinished) {
+                    pauseVideo();
+                    resetVideo();
+                }
+            }
         }
-        private void initVideoPlayer() {
+        private void loadLastFrame() {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             String uriString = prefs.getString(KEY_VIDEO_URI, null);
             if (uriString == null) { drawBlackScreen(); return; }
             Uri videoUri = Uri.parse(uriString);
-            bgHandler.post(() -> extractLastFrame(videoUri));
+            bgHandler.post(() -> {
+                try {
+                    MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+                    retriever.setDataSource(VideoWallpaperService.this, videoUri);
+                    String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    long duration = Long.parseLong(durationStr);
+                    long frameTime = Math.max(0, (duration - 50)) * 1000;
+                    Bitmap frame = retriever.getFrameAtTime(frameTime, MediaMetadataRetriever.OPTION_CLOSEST);
+                    retriever.release();
+                    if (frame != null) lastFrame = frame;
+                } catch (Exception ignored) {}
+                mainHandler.post(() -> drawLastFrame());
+            });
         }
-        private void extractLastFrame(Uri videoUri) {
-            try {
-                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-                retriever.setDataSource(VideoWallpaperService.this, videoUri);
-                String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-                long duration = Long.parseLong(durationStr);
-                long frameTime = Math.max(0, (duration - 50)) * 1000;
-                Bitmap frame = retriever.getFrameAtTime(frameTime, MediaMetadataRetriever.OPTION_CLOSEST);
-                retriever.release();
-                if (frame != null) lastFrame = frame;
-                mainHandler.post(() -> startVideoPlayback(videoUri));
-            } catch (Exception e) {
-                mainHandler.post(() -> startVideoPlayback(videoUri));
-            }
+        private void startVideoFromUri() {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            String uriString = prefs.getString(KEY_VIDEO_URI, null);
+            if (uriString == null) return;
+            startVideoPlayback(Uri.parse(uriString));
         }
         private void startVideoPlayback(Uri videoUri) {
             releaseMediaPlayer();
@@ -112,6 +123,11 @@ public class VideoWallpaperService extends WallpaperService {
                 mediaPlayer.prepareAsync();
             } catch (IOException e) { drawBlackScreen(); }
         }
+        private void resetVideo() {
+            releaseMediaPlayer();
+            videoFinished = false;
+            isPlaying = false;
+        }
         private void drawLastFrame() {
             if (lastFrame == null) { drawBlackScreen(); return; }
             SurfaceHolder holder = getSurfaceHolder();
@@ -121,11 +137,14 @@ public class VideoWallpaperService extends WallpaperService {
                 if (canvas != null) {
                     int cW = canvas.getWidth(), cH = canvas.getHeight();
                     canvas.drawRect(0, 0, cW, cH, bgPaint);
-                    float scale = Math.max((float)cW/lastFrame.getWidth(), (float)cH/lastFrame.getHeight());
-                    float sW = lastFrame.getWidth()*scale, sH = lastFrame.getHeight()*scale;
+                    float scaleX = (float)cW / lastFrame.getWidth();
+                    float scaleY = (float)cH / lastFrame.getHeight();
+                    float scale = Math.min(scaleX, scaleY);
+                    float sW = lastFrame.getWidth() * scale;
+                    float sH = lastFrame.getHeight() * scale;
                     Matrix matrix = new Matrix();
                     matrix.setScale(scale, scale);
-                    matrix.postTranslate((cW-sW)/2f, (cH-sH)/2f);
+                    matrix.postTranslate((cW - sW) / 2f, (cH - sH) / 2f);
                     canvas.drawBitmap(lastFrame, matrix, paint);
                 }
             } finally {
@@ -141,12 +160,6 @@ public class VideoWallpaperService extends WallpaperService {
             } finally {
                 if (canvas != null) try { holder.unlockCanvasAndPost(canvas); } catch (Exception ignored) {}
             }
-        }
-        private void restartVideo() {
-            videoFinished = false;
-            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-            String uriString = prefs.getString(KEY_VIDEO_URI, null);
-            if (uriString != null) startVideoPlayback(Uri.parse(uriString));
         }
         private void pauseVideo() {
             if (mediaPlayer != null && isPlaying) try { mediaPlayer.pause(); } catch (Exception ignored) {}
