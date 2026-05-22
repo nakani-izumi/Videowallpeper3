@@ -30,12 +30,10 @@ public class VideoWallpaperService extends WallpaperService {
         private Paint bgPaint = new Paint();
         private boolean isPlaying = false;
         private boolean videoFinished = false;
-        private boolean isPrepared = false;
         private HandlerThread handlerThread;
         private Handler bgHandler;
         private Handler mainHandler = new Handler(Looper.getMainLooper());
         private BroadcastReceiver screenReceiver;
-        private Uri cachedVideoUri = null;
         @Override
         public void onCreate(SurfaceHolder surfaceHolder) {
             super.onCreate(surfaceHolder);
@@ -46,10 +44,9 @@ public class VideoWallpaperService extends WallpaperService {
             screenReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
-                    String action = intent.getAction();
-                    if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                    if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
                         pauseVideo();
-                        prepareVideoInAdvance();
+                        resetVideo();
                     }
                 }
             };
@@ -63,21 +60,10 @@ public class VideoWallpaperService extends WallpaperService {
             loadLastFrame();
         }
         @Override
-        public void onSurfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-            super.onSurfaceChanged(holder, format, width, height);
-            if (mediaPlayer != null && isPrepared && !isPlaying && !videoFinished) {
-                mediaPlayer.setSurface(holder.getSurface());
-            }
-        }
-        @Override
         public void onVisibilityChanged(boolean visible) {
             super.onVisibilityChanged(visible);
             if (visible) {
-                if (isPrepared && !isPlaying && !videoFinished) {
-                    mediaPlayer.setSurface(getSurfaceHolder().getSurface());
-                    mediaPlayer.start();
-                    isPlaying = true;
-                } else if (!isPrepared && !isPlaying && !videoFinished) {
+                if (!isPlaying && !videoFinished) {
                     startVideoFromUri();
                 } else if (videoFinished && lastFrame != null) {
                     drawLastFrame();
@@ -85,7 +71,7 @@ public class VideoWallpaperService extends WallpaperService {
             } else {
                 if (!videoFinished) {
                     pauseVideo();
-                    prepareVideoInAdvance();
+                    resetVideo();
                 }
             }
         }
@@ -93,11 +79,11 @@ public class VideoWallpaperService extends WallpaperService {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             String uriString = prefs.getString(KEY_VIDEO_URI, null);
             if (uriString == null) { drawBlackScreen(); return; }
-            cachedVideoUri = Uri.parse(uriString);
+            Uri videoUri = Uri.parse(uriString);
             bgHandler.post(() -> {
                 try {
                     MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-                    retriever.setDataSource(VideoWallpaperService.this, cachedVideoUri);
+                    retriever.setDataSource(VideoWallpaperService.this, videoUri);
                     String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
                     long duration = Long.parseLong(durationStr);
                     long frameTime = Math.max(0, (duration - 50)) * 1000;
@@ -105,80 +91,44 @@ public class VideoWallpaperService extends WallpaperService {
                     retriever.release();
                     if (frame != null) lastFrame = frame;
                 } catch (Exception ignored) {}
-                mainHandler.post(() -> {
-                    drawLastFrame();
-                    prepareVideoInAdvance();
-                });
+                mainHandler.post(() -> drawLastFrame());
             });
         }
-        private void prepareVideoInAdvance() {
-            if (cachedVideoUri == null) {
-                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-                String uriString = prefs.getString(KEY_VIDEO_URI, null);
-                if (uriString == null) return;
-                cachedVideoUri = Uri.parse(uriString);
-            }
-            releaseMediaPlayer();
-            videoFinished = false;
-            isPlaying = false;
-            isPrepared = false;
-            mediaPlayer = new MediaPlayer();
-            try {
-                mediaPlayer.setDataSource(VideoWallpaperService.this, cachedVideoUri);
-                mediaPlayer.setVolume(0f, 0f);
-                mediaPlayer.setLooping(false);
-                mediaPlayer.setOnPreparedListener(mp -> {
-                    isPrepared = true;
-                });
-                mediaPlayer.setOnCompletionListener(mp -> {
-                    isPlaying = false;
-                    videoFinished = true;
-                    isPrepared = false;
-                    mp.stop();
-                    mainHandler.post(() -> drawLastFrame());
-                });
-                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                    isPlaying = false; videoFinished = true; isPrepared = false;
-                    drawBlackScreen(); return true;
-                });
-                mediaPlayer.prepareAsync();
-            } catch (IOException e) { drawBlackScreen(); }
-        }
         private void startVideoFromUri() {
-            if (cachedVideoUri == null) {
-                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-                String uriString = prefs.getString(KEY_VIDEO_URI, null);
-                if (uriString == null) return;
-                cachedVideoUri = Uri.parse(uriString);
-            }
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            String uriString = prefs.getString(KEY_VIDEO_URI, null);
+            if (uriString == null) return;
             releaseMediaPlayer();
-            videoFinished = false;
-            isPlaying = false;
-            isPrepared = false;
             mediaPlayer = new MediaPlayer();
+            videoFinished = false;
             try {
-                mediaPlayer.setDataSource(VideoWallpaperService.this, cachedVideoUri);
+                mediaPlayer.setDataSource(VideoWallpaperService.this, Uri.parse(uriString));
                 mediaPlayer.setSurface(getSurfaceHolder().getSurface());
                 mediaPlayer.setVolume(0f, 0f);
                 mediaPlayer.setLooping(false);
                 mediaPlayer.setOnPreparedListener(mp -> {
-                    isPrepared = true;
                     isPlaying = true;
                     mp.start();
                 });
                 mediaPlayer.setOnCompletionListener(mp -> {
                     isPlaying = false;
                     videoFinished = true;
-                    isPrepared = false;
                     mp.stop();
                     mainHandler.post(() -> drawLastFrame());
                 });
                 mediaPlayer.setOnErrorListener((mp, what, extra) -> {
-                    isPlaying = false; videoFinished = true; isPrepared = false;
-                    drawBlackScreen(); return true;
+                    isPlaying = false;
+                    videoFinished = true;
+                    drawBlackScreen();
+                    return true;
                 });
                 mediaPlayer.prepareAsync();
             } catch (IOException e) { drawBlackScreen(); }
+        }
+        private void resetVideo() {
+            releaseMediaPlayer();
+            videoFinished = false;
+            isPlaying = false;
         }
         private void drawLastFrame() {
             if (lastFrame == null) { drawBlackScreen(); return; }
@@ -224,7 +174,6 @@ public class VideoWallpaperService extends WallpaperService {
                 mediaPlayer = null;
             }
             isPlaying = false;
-            isPrepared = false;
         }
         @Override
         public void onSurfaceDestroyed(SurfaceHolder holder) { super.onSurfaceDestroyed(holder); releaseMediaPlayer(); }
