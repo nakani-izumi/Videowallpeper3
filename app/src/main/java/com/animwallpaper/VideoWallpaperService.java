@@ -26,12 +26,12 @@ public class VideoWallpaperService extends WallpaperService {
     public Engine onCreateEngine() { return new VideoEngine(); }
     class VideoEngine extends Engine {
         private MediaPlayer mediaPlayer;
-        private MediaPlayer bgMediaPlayer;
         private Bitmap freezeFrame = null;
         private Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private Paint bgPaint = new Paint();
         private boolean isPlaying = false;
         private boolean videoFinished = false;
+        private boolean isFrozen = false;
         private HandlerThread handlerThread;
         private Handler bgHandler;
         private Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -48,7 +48,7 @@ public class VideoWallpaperService extends WallpaperService {
                 @Override
                 public void onReceive(Context context, Intent intent) {
                     if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
-                        onScreenOff();
+                        resetForNextUnlock();
                     }
                 }
             };
@@ -65,43 +65,59 @@ public class VideoWallpaperService extends WallpaperService {
         public void onVisibilityChanged(boolean visible) {
             super.onVisibilityChanged(visible);
             if (visible) {
-                if (!isPlaying && !videoFinished) {
-                    startVideo();
-                } else if (videoFinished) {
+                // Arrivée sur l'écran d'accueil
+                if (!isPlaying && !isFrozen) {
+                    startVideoFromBeginning();
+                } else if (isFrozen) {
                     drawFreezeFrame();
                 }
             } else {
-                cancelFreezeRunnable();
-                if (isPlaying) {
-                    pauseMainVideo();
+                // Quitte l'écran d'accueil vers verrouillage
+                if (isFrozen) {
+                    // Continue la vidéo de FREEZE_TIME_MS jusqu'à la fin (écran noir)
+                    continueVideoToEnd();
+                } else if (isPlaying) {
+                    // Vidéo encore en cours, on pause et reset
+                    resetForNextUnlock();
                 }
             }
         }
-        private void onScreenOff() {
-            cancelFreezeRunnable();
-            releaseMainPlayer();
-            videoFinished = false;
-            isPlaying = false;
-            playBackgroundToEnd();
-        }
-        private void playBackgroundToEnd() {
+        private void continueVideoToEnd() {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             String uriString = prefs.getString(KEY_VIDEO_URI, null);
             if (uriString == null) return;
-            releaseBgPlayer();
-            bgMediaPlayer = new MediaPlayer();
+            releaseMediaPlayer();
+            isFrozen = false;
+            videoFinished = false;
+            isPlaying = false;
+            mediaPlayer = new MediaPlayer();
             try {
-                bgMediaPlayer.setDataSource(VideoWallpaperService.this, Uri.parse(uriString));
-                bgMediaPlayer.setVolume(0f, 0f);
-                bgMediaPlayer.setLooping(false);
-                bgMediaPlayer.setOnPreparedListener(mp -> {
+                mediaPlayer.setDataSource(VideoWallpaperService.this, Uri.parse(uriString));
+                // Pas de surface - joue en arrière-plan silencieusement
+                mediaPlayer.setVolume(0f, 0f);
+                mediaPlayer.setLooping(false);
+                mediaPlayer.setOnPreparedListener(mp -> {
                     mp.seekTo(FREEZE_TIME_MS);
                     mp.start();
+                    isPlaying = true;
                 });
-                bgMediaPlayer.setOnCompletionListener(mp -> releaseBgPlayer());
-                bgMediaPlayer.setOnErrorListener((mp, w, e) -> { releaseBgPlayer(); return true; });
-                bgMediaPlayer.prepareAsync();
-            } catch (IOException e) { releaseBgPlayer(); }
+                mediaPlayer.setOnCompletionListener(mp -> {
+                    isPlaying = false;
+                    videoFinished = true;
+                    resetForNextUnlock();
+                });
+                mediaPlayer.setOnErrorListener((mp, w, e) -> {
+                    resetForNextUnlock(); return true;
+                });
+                mediaPlayer.prepareAsync();
+            } catch (IOException e) { resetForNextUnlock(); }
+        }
+        private void resetForNextUnlock() {
+            cancelFreezeRunnable();
+            releaseMediaPlayer();
+            videoFinished = false;
+            isPlaying = false;
+            isFrozen = false;
         }
         private void loadFreezeFrame() {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -116,16 +132,17 @@ public class VideoWallpaperService extends WallpaperService {
                     retriever.release();
                     if (frame != null) freezeFrame = frame;
                 } catch (Exception ignored) {}
-                mainHandler.post(() -> drawFreezeFrame());
+                mainHandler.post(() -> drawBlackScreen());
             });
         }
-        private void startVideo() {
+        private void startVideoFromBeginning() {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             String uriString = prefs.getString(KEY_VIDEO_URI, null);
             if (uriString == null) return;
-            releaseMainPlayer();
-            mediaPlayer = new MediaPlayer();
+            releaseMediaPlayer();
             videoFinished = false;
+            isFrozen = false;
+            mediaPlayer = new MediaPlayer();
             try {
                 mediaPlayer.setDataSource(VideoWallpaperService.this, Uri.parse(uriString));
                 mediaPlayer.setSurface(getSurfaceHolder().getSurface());
@@ -139,11 +156,13 @@ public class VideoWallpaperService extends WallpaperService {
                 mediaPlayer.setOnCompletionListener(mp -> {
                     isPlaying = false;
                     videoFinished = true;
+                    isFrozen = true;
                     mainHandler.post(() -> drawFreezeFrame());
                 });
                 mediaPlayer.setOnErrorListener((mp, w, e) -> {
-                    isPlaying = false; videoFinished = true;
-                    drawBlackScreen(); return true;
+                    isPlaying = false;
+                    drawBlackScreen();
+                    return true;
                 });
                 mediaPlayer.prepareAsync();
             } catch (IOException e) { drawBlackScreen(); }
@@ -151,10 +170,10 @@ public class VideoWallpaperService extends WallpaperService {
         private void scheduleFreezeAt(int ms) {
             cancelFreezeRunnable();
             freezeRunnable = () -> {
-                if (isPlaying && mediaPlayer != null) {
+                if (mediaPlayer != null && isPlaying) {
                     try { mediaPlayer.pause(); } catch (Exception ignored) {}
                     isPlaying = false;
-                    videoFinished = true;
+                    isFrozen = true;
                     drawFreezeFrame();
                 }
             };
@@ -199,11 +218,7 @@ public class VideoWallpaperService extends WallpaperService {
                 if (canvas != null) try { holder.unlockCanvasAndPost(canvas); } catch (Exception ignored) {}
             }
         }
-        private void pauseMainVideo() {
-            if (mediaPlayer != null && isPlaying) try { mediaPlayer.pause(); } catch (Exception ignored) {}
-            isPlaying = false;
-        }
-        private void releaseMainPlayer() {
+        private void releaseMediaPlayer() {
             cancelFreezeRunnable();
             if (mediaPlayer != null) {
                 try { mediaPlayer.stop(); } catch (Exception ignored) {}
@@ -212,24 +227,15 @@ public class VideoWallpaperService extends WallpaperService {
             }
             isPlaying = false;
         }
-        private void releaseBgPlayer() {
-            if (bgMediaPlayer != null) {
-                try { bgMediaPlayer.stop(); } catch (Exception ignored) {}
-                try { bgMediaPlayer.release(); } catch (Exception ignored) {}
-                bgMediaPlayer = null;
-            }
-        }
         @Override
         public void onSurfaceDestroyed(SurfaceHolder holder) {
             super.onSurfaceDestroyed(holder);
-            releaseMainPlayer();
-            releaseBgPlayer();
+            releaseMediaPlayer();
         }
         @Override
         public void onDestroy() {
             super.onDestroy();
-            releaseMainPlayer();
-            releaseBgPlayer();
+            releaseMediaPlayer();
             if (screenReceiver != null) try { unregisterReceiver(screenReceiver); } catch (Exception ignored) {}
             if (handlerThread != null) handlerThread.quitSafely();
             if (freezeFrame != null && !freezeFrame.isRecycled()) { freezeFrame.recycle(); freezeFrame = null; }
