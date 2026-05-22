@@ -65,6 +65,7 @@ public class VideoWallpaperService extends WallpaperService {
         public void onVisibilityChanged(boolean visible) {
             super.onVisibilityChanged(visible);
             if (visible) {
+                if (!isPlaying && !videoFinished) {
                     startVideo();
                 } else if (videoFinished) {
                     drawFreezeFrame();
@@ -231,6 +232,7 @@ public class VideoWallpaperService extends WallpaperService {
             releaseBgPlayer();
             if (screenReceiver != null) try { unregisterReceiver(screenReceiver); } catch (Exception ignored) {}
             if (handlerThread != null) handlerThread.quitSafely();
+            if (freezeFrame != null && !freezeFrame.isRecycled()) { freezeFrame.recycle(); freezeFrame = null; }
         }
     }
 }
